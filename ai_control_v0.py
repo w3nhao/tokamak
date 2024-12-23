@@ -735,8 +735,17 @@ class KSTARWidget(QDialog):
 
 
 if __name__ == '__main__':
-    app = QApplication([])
-    window = KSTARWidget()
-    window.show()
-    app.exec()
+    from pyvirtualdisplay import Display
+
+    forward_port = 5904
+
+    print("start Xvnc")
+    print("connect with: vncviewer localhost:5904")
+
+    with Display(backend="xvnc", size=(1280, 800), rfbport=forward_port) as disp:
+        
+        app = QApplication([])
+        window = KSTARWidget()
+        window.show()
+        app.exec()
 

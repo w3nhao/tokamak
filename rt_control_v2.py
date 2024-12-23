@@ -2,6 +2,9 @@
 
 import os, sys, time
 import numpy as np
+
+np.random.seed(0)
+
 import matplotlib
 import matplotlib.pyplot as plt
 from matplotlib.path import Path
@@ -134,7 +137,12 @@ class KSTARWidget(QDialog):
         self.new_action = np.array(low_action)
         self.histories = [list(low_action) + list(target_init)] * lookback
         self.img = plt.imread(kstar_img_path)
+        
+        self.targetSliderDict = None
 
+        # Data Records for Saving
+        self.data_records = []  # Initialize an empty list to store data records
+        
         # Load models
         if steady_model:
             self.kstar_nn = kstar_nn(model_path=nn_model_path, n_models=max_models)
@@ -382,8 +390,14 @@ class KSTARWidget(QDialog):
         observation = np.zeros_like(low_state)
         for i in range(lookback):
             observation[i * len(self.histories[0]) : (i + 1) * len(self.histories[0])] = self.histories[i]
+            # print(i * len(self.histories[0]), (i + 1) * len(self.histories[0]), self.histories[i])
+        
         observation[lookback * len(self.histories[0]) :] = [i2f(self.targetSliderDict[target_params[i]].value()) for i in [0, 1, 2]]
+        # print(observation)
+        # np.save('observation_org.npy', observation)
         self.new_action = self.rl_model.predict(observation, yold=self.new_action)
+        # print(self.new_action)
+        # exit()
         idx_convert = [0, 3, 4, 5, 12, 13, 14, 10, 11]
         for i, idx in enumerate(idx_convert):
             self.inputSliderDict[input_params[idx]].setValue(f2i(self.new_action[i]))
@@ -485,7 +499,36 @@ class KSTARWidget(QDialog):
 
         plt.xlabel('Relative time [s]')
         plt.tight_layout(h_pad=0., rect=(0.05,0.05,0.95,0.95))
+                
+        # ==============================
+        # Data Recording Mechanism
+        # ==============================
+        
+        # After plotting, record the current state
+        self.record_data()
         self.first = False
+
+    def record_data(self):
+        """Record the current simulation state into data_records."""
+        record = {}
+        # Input Parameters (Convert back to float)
+        for param in input_params:
+            record["in_" + param] = i2f(self.inputSliderDict[param].value())
+        # Output Parameters
+        for param in output_params2:
+            record["out2_" + param] = self.outputs[param][-1]
+        # Dummy Parameters
+        for param in dummy_params:
+            record["dum_" + param] = self.dummy[param][-1]
+        # Target Parameters (Convert back to float)
+        if self.targetSliderDict is not None:
+            for param in target_params:
+                record["tgt_" + param] = i2f(self.targetSliderDict[param].value())
+        else:
+            for param in target_params:
+                record["tgt_" + param] = -10.000
+        # Append the record to data_records
+        self.data_records.append(record)
 
     def predictBoundary(self):
         ip = self.inputSliderDict[input_params[0]].value()/10**decimals
@@ -602,7 +645,6 @@ class KSTARWidget(QDialog):
             self.x[:, 11 + 4] += self.inputSliderDict[input_params[7]].value()/10**decimals
             self.x[:, 12 + 4] = 1 if self.x[-1, 12 + 4] > 1.265 + 1.e-4 else 0
             self.x[:, -1] = year_in
-
         else:
             self.x[:-1,len(output_params0):] = self.x[1:,len(output_params0):]
             idx_convert = [0, 1, 2, 12, 13 ,14 ,10, 11, 3, 4, 5, 6, 10]
@@ -628,7 +670,7 @@ class KSTARWidget(QDialog):
                 elif len(self.targets[target_param]) == 1:
                     self.targets[target_param][0] = i2f(self.targetSliderDict[target_param].value())
                 self.targets[target_param].append(i2f(self.targetSliderDict[target_param].value()))
-
+                
         # Predict output_params1 (βp, wmhd)
         x = np.zeros(8)
         idx_convert = [0,0,1,10,11,12,13,14]
@@ -727,10 +769,26 @@ class KSTARWidget(QDialog):
         for input_param in input_params:
             print(f'{input_param}: {i2f(self.inputSliderDict[input_param].value())}')
 
+        # Save the data_records to CSV
+        if self.data_records:
+            # Save data to numpy
+            data_records = np.array(self.data_records)
+            output_file = os.path.join(base_path, 'kstar_generated_data.npy')
+            # compress data
+            np.savez_compressed(output_file, data=data_records)
+            print(f'Data generation complete. Saved to {output_file}')
+        else:
+            print('No data records to save.')
 
 if __name__ == '__main__':
-    app = QApplication([])
-    window = KSTARWidget()
-    window.show()
-    app.exec()
+    from pyvirtualdisplay import Display
+    forward_port = 5904
+    print("start Xvnc")
+    print("connect with: vncviewer localhost:5904")
+    with Display(backend="xvnc", size=(1280, 800), rfbport=forward_port) as disp:
+        
+        app = QApplication([])
+        window = KSTARWidget()
+        window.show()
+        app.exec()
 
