@@ -59,7 +59,6 @@ high_target = [2.1, 7.0, 1.05]
 low_action = [0.3, 0.0, 0.0, 0.0, 1.6, 0.15, 0.5, 1.265, 2.14]
 high_action = [0.8, 1.75, 1.75, 1.5, 1.95, 0.5, 0.85, 1.36, 2.3]
 
-
 low_state = (low_action + low_target) * lookback + low_target
 high_state = (high_action + high_target) * lookback + high_target
 
@@ -90,6 +89,9 @@ target_maxs = [2.1, 7.0, 1.05]
 target_init = [1.45, 5.5, 0.925]
 
 
+rand_target_mins = [1.06, 4.6, 0.85]
+rand_target_maxs = [1.84, 6.4, 1.00]
+
 # =======================
 # Utility Functions
 # =======================
@@ -114,10 +116,12 @@ class KSTARDataGenerator:
         self.outputs = {p: [0.0] for p in output_params2}
         self.dummy = {p: [0.0] for p in dummy_params}
         self.x = np.zeros([seq_len, 18])
-        self.targets = {p: [v] * 2 for p, v in zip(target_params, target_init)}
+        # self.targets = {p: [v] * 2 for p, v in zip(target_params, target_init)}
         self.new_action = np.array(low_action)
         self.histories = [list(low_action) + list(target_init)] * lookback
         self.img = plt.imread(kstar_img_path)
+        
+        self.target = None
 
         # Load models
         if steady_model:
@@ -146,9 +150,11 @@ class KSTARDataGenerator:
         # Initialize inputs
         self.initialize_inputs()
 
+
     def initialize_inputs(self):
         """Initialize input parameters scaled as integers."""
         self.inputs = {param: f2i(val) for param, val in zip(input_params, input_init)}
+        
         
     def reset_model_number(self):
         """ MImic the original codes behavior """
@@ -157,22 +163,10 @@ class KSTARDataGenerator:
         else:
             self.kstar_lstm.nmodels = n_model_box
         self.bpw_nn.nmodels = n_model_box
-
-    # def predict_boundary(self):
-    #     """Predict plasma boundary using k2rz model."""
-    #     ip = i2f(self.inputs['Ip [MA]'])
-    #     bt = i2f(self.inputs['Bt [T]'])
-    #     bp = self.outputs['βp'][-1]
-    #     rin = i2f(self.inputs['In.Mid. [m]'])
-    #     rout = i2f(self.inputs['Out.Mid. [m]'])
-    #     k = i2f(self.inputs['Elon. [-]'])
-    #     du = i2f(self.inputs['Up.Tri. [-]'])
-    #     dl = i2f(self.inputs['Lo.Tri. [-]'])
-
-    #     self.k2rz.set_inputs(ip, bt, bp, rin, rout, k, du, dl)
-    #     self.rbdry, self.zbdry = self.k2rz.predict(post=True)
-    #     self.rx1, self.zx1 = self.rbdry[np.argmin(self.zbdry)], np.min(self.zbdry)
-    #     self.rx2, self.zx2 = self.rx1, -self.zx1
+        
+    def set_next_target(self, target):
+        """ Set the next target values in dictionary format """
+        self.target = target
 
     def predict_0d(self, steady=True):
         """Predict 0D plasma parameters."""
@@ -218,15 +212,6 @@ class KSTARDataGenerator:
                 elif len(self.outputs[output_params0[i]]) == 1:
                     self.outputs[output_params0[i]][0] = y[i]
                 self.outputs[output_params0[i]].append(y[i])
-                
-        # Update output targets (βp, q95, li)                
-        if not self.first:
-            for i,target_param in enumerate(target_params):
-                if len(self.targets[target_param]) >= plot_length:
-                    del self.targets[target_param][0]
-                elif len(self.targets[target_param]) == 1:
-                    self.targets[target_param][0] = self.targets[target_param][-1]
-                self.targets[target_param].append(self.targets[target_param][-1])
                 
         # Predict output_params1 (βp, wmhd)
         x = np.zeros(8)
@@ -294,15 +279,17 @@ class KSTARDataGenerator:
         self.outputs['h98'].append(h98)
 
 
-    def auto_control(self):
+    def auto_control(self, target):
         """Use RL model to predict new actions and update inputs."""
+        self.target = target
+        
         observation = np.zeros_like(low_state)
         for i in range(lookback):
             observation[i * len(self.histories[0]): (i + 1) * len(self.histories[0])] = self.histories[i]
             
         # Targets are the last entries
         observation[lookback * len(self.histories[0]):] = [
-            self.targets[target_params[j]][-1] for j in range(len(target_params))
+            self.target[target_params[j]] for j in range(len(target_params))
         ]
         self.new_action = self.rl_model.predict(observation, yold=self.new_action)
         
@@ -313,83 +300,101 @@ class KSTARDataGenerator:
             action_value = np.clip(self.new_action[i], low_action[i], high_action[i])
             self.inputs[param] = f2i(action_value)
 
+        # Ip [MA]
+        # Pnb1a [MW]
+        # Pnb1b [MW]
+        # Pnb1c [MW]
+        # Elon. [-]
+        # Up.Tri. [-]
+        # Lo.Tri. [-]
+        # In.Mid. [m]
+        # Out.Mid. [m]
 
-    def data_collect(self):
-        """Collect data for the simulation."""
-        record = {}
-        # Input Parameters (Convert back to float)
-        for param in input_params:
-            record["in_" + param] = i2f(self.inputs[param])
-        # Output Parameters
-        for param in output_params2:
-            record["out2_" + param] = self.outputs[param][-1]
-        # Dummy Parameters
-        for param in dummy_params:
-            record["dum_" + param] = self.dummy[param][-1]
-        for param in target_params:
-            record["tgt_" + param] = self.targets[param][-1]
+    def return_state(self):
+        return self.x[-1, :4].copy()
+    
+    def return_action(self):
+        return self.new_action.copy()
 
-        return record
+    def get_random_target(self):
+        """Generate random target values."""
+        target = {}
+        for param, low, high in zip(target_params, rand_target_mins, rand_target_maxs):
+            target[param] = i2f(f2i(np.random.uniform(low, high)))
+        return target
 
 
-    def run_simulation(self, seconds=10):
+    def random_target_simulation(self, random_seed=0):
         """Run the simulation for a specified number of steps."""
-        data_records = []
+        np.random.seed(random_seed)
+        seconds = 12
+        states = []
+        actions = []
         
-        # Predict boundary and 0D parameters first step 
-        # self.predict_boundary()
+        # Predict 0D parameters first step 
         self.predict_0d(steady=True)
         self.first = False
         
-        record = self.data_collect()
-        data_records.append(record)
+        target = self.get_random_target()
+        self.target = target
+        states.append(self.return_state())
         
-        # update the target values
-        self.auto_control()
-        # self.predict_boundary()
+        # mimic the behavior of the original code (they need one step before to update the visualizations)
+        self.auto_control(target)
         self.predict_0d(steady=steady_model)
         
-        record = self.data_collect()
-        data_records.append(record)
+        actions.append(self.return_action())
+        states.append(self.return_state())
         
         p_bar = tqdm(total=seconds * 10)
         
-        # steps = int(seconds / t_delay)
         for sec in range(seconds):
             for step in range(10 - 1):
                 # Auto control every 'control_interval' steps
-                self.auto_control()
-
-                # Predict 0D parameters
+                self.auto_control(target)
                 self.predict_0d(steady=steady_model)
                 
+                actions.append(self.return_action())
+                states.append(self.return_state())
+        
                 p_bar.update(1)
             
             # Update the target values
-            self.auto_control()
-            # self.predict_boundary()
+            self.auto_control(target)
             self.predict_0d(steady=steady_model)
+            
+            actions.append(self.return_action())
+            states.append(self.return_state())
+            
+            if (sec + 1) % 3 == 0:
+                target = self.get_random_target()
             
             p_bar.update(1)
 
-            # Collect data: Convert inputs back to floats for recording
-            record = self.data_collect()
-            data_records.append(record)
-
-            # Optional: Add delay if needed
-            # time.sleep(t_delay)
-
         # Save data to numpy
+        os.makedirs(os.path.join(base_path, 'data'), exist_ok=True)
+        data_records = {
+            'states': np.array(states),
+            'actions': np.array(actions)
+        }
         data_records = np.array(data_records)
-        output_file = os.path.join(base_path, 'kstar_generated_data.npz')
+        filename = f'{random_seed}.npz'
+        output_file = os.path.join(base_path, 'data', filename)
         # compress data
         np.savez_compressed(output_file, data=data_records)
         print(f'Data generation complete. Saved to {output_file}')
-
+    
+    
 # =======================
 # Main Execution
 # =======================
 
 if __name__ == '__main__':
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='KSTAR Data Generator')
+    parser.add_argument('--seed', type=int, default=0, help='Random seed')
+    args = parser.parse_args()
+    
     generator = KSTARDataGenerator()
-    generator.run_simulation(seconds=10)
+    generator.random_target_simulation(random_seed=args.seed)
