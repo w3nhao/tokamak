@@ -397,8 +397,15 @@ class KSTARDataGenerator:
             self.inputs[param] = f2i(action_value)
 
 
-    def return_state(self):         
-        return self.x[-1, :4].copy()
+    def return_input(self):         
+        return self.inputs.copy()
+    
+    def return_outputs(self):
+        # βn, βp, h89, h98, q95, q0, li, wmhd
+        output = {}
+        for param in self.outputs.keys():
+            output[param] = self.outputs[param][-1]
+        return output
     
     def return_action(self):
         return self.new_action.copy()
@@ -415,7 +422,8 @@ class KSTARDataGenerator:
         """Run the simulation for a specified number of steps."""
         np.random.seed(random_seed)
         seconds = 12
-        states = []
+        inputs = []
+        outputs = []
         actions = []
         targets = []
         
@@ -423,30 +431,54 @@ class KSTARDataGenerator:
         self.predict_0d(steady=True)
         self.first = False
         
+        # Collect Data
+        # Ip, Bt, GW.frac., Pnb1a, Pnb1b, Pnb1c, Pec2, Pec3, Zec2, Zec3, In.Mid., Out.Mid., Elon., Up.Tri., Lo.Tri.
+        inputs.append([i2f(v) for v in self.return_input().values()])
+        # βn, βp, h89, h98, q95, q0, li, wmhd
+        outputs.append([v for v in self.return_outputs().values()])
+        
         target = self.get_random_target()
         self.target = target
-        states.append(self.return_state())
-        targets.append(target)
         
-        # mimic the behavior of the original code (they need one step before to update the visualizations)
+        # βp, q95, li
+        targets.append(list(target.values()))
+        
+        # Mimic the behavior of the original code (they need one step before to update the visualizations)
         self.auto_control(target)
         self.predict_0d(steady=steady_model)
         
+        # Collect Data
+        # Ip, Bt, GW.frac., Pnb1a, Pnb1b, Pnb1c, Pec2, Pec3, Zec2, Zec3, In.Mid., Out.Mid., Elon., Up.Tri., Lo.Tri.
+        inputs.append([i2f(v) for v in self.return_input().values()])
+        # βn, βp, h89, h98, q95, q0, li, wmhd
+        outputs.append([v for v in self.return_outputs().values()])
+        
+        # Ip, Pnb1a, Pnb1b, Pnb1c, Elon., Up.Tri., Lo.Tri., In.Mid., Out.Mid.
         actions.append(self.return_action())
-        states.append(self.return_state())
-        targets.append(target)
         
+        # βp, q95, li
+        targets.append(list(target.values()))
+        
+        # Main loop
         p_bar = tqdm(total=seconds * 10)
-        
         for sec in range(seconds):
             for step in range(10 - 1):
+                
                 # Auto control every 'control_interval' steps
                 self.auto_control(target)
                 self.predict_0d(steady=steady_model)
                 
+                # Collect Data
+                # Ip, Bt, GW.frac., Pnb1a, Pnb1b, Pnb1c, Pec2, Pec3, Zec2, Zec3, In.Mid., Out.Mid., Elon., Up.Tri., Lo.Tri.
+                inputs.append([i2f(v) for v in self.return_input().values()])
+                # βn, βp, h89, h98, q95, q0, li, wmhd
+                outputs.append([v for v in self.return_outputs().values()])
+                
+                # Ip, Pnb1a, Pnb1b, Pnb1c, Elon., Up.Tri., Lo.Tri., In.Mid., Out.Mid.
                 actions.append(self.return_action())
-                states.append(self.return_state())
-                targets.append(target)
+                
+                # βp, q95, li
+                targets.append(list(target.values()))
         
                 p_bar.update(1)
             
@@ -454,10 +486,19 @@ class KSTARDataGenerator:
             self.auto_control(target)
             self.predict_0d(steady=steady_model)
             
-            actions.append(self.return_action())
-            states.append(self.return_state())
-            targets.append(target)
+            # Collect Data
+            # Ip, Bt, GW.frac., Pnb1a, Pnb1b, Pnb1c, Pec2, Pec3, Zec2, Zec3, In.Mid., Out.Mid., Elon., Up.Tri., Lo.Tri.
+            inputs.append([i2f(v) for v in self.return_input().values()])
+            # βn, βp, h89, h98, q95, q0, li, wmhd
+            outputs.append([v for v in self.return_outputs().values()])
             
+            # Ip, Pnb1a, Pnb1b, Pnb1c, Elon., Up.Tri., Lo.Tri., In.Mid., Out.Mid.
+            actions.append(self.return_action())
+            
+            # βp, q95, li
+            targets.append(list(target.values()))
+            
+            # Update the target values every 3 seconds
             if (sec + 1) % 3 == 0:
                 target = self.get_random_target()
             
@@ -466,7 +507,8 @@ class KSTARDataGenerator:
         # Save data to numpy
         os.makedirs(os.path.join(base_path, 'data'), exist_ok=True)
         data_records = {
-            'states': np.array(states),
+            'inputs': np.array(inputs),
+            'outputs': np.array(outputs),
             'targets': np.array(targets),
             'actions': np.array(actions)
         }
