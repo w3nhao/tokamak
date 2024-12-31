@@ -76,7 +76,7 @@ input_init = [0.5, 1.8, 0.33, 1.5, 1.5, 0.5, 0.0, 0.0, 0.0, 0.0, 1.32, 2.22, 1.7
 # Outputs
 output_params0 = ['βn', 'q95', 'q0', 'li']
 output_params1 = ['βp', 'wmhd']
-output_params2 = ['βn', 'βp', 'h89', 'h98', 'q95', 'q0', 'li', 'wmhd']
+output_params2 = ['βn', 'βp', 'h89', 'h98', 'q95', 'q0', 'li', 'wmhd'] # for all the outputs
 dummy_params = [
     'Ip [MA]', 'Elon. [-]', 'Up.Tri. [-]', 'Lo.Tri. [-]', 
     'In.Mid. [m]', 'Out.Mid. [m]', 'Pnb1a [MW]', 'Pnb1b [MW]', 'Pnb1c [MW]'
@@ -170,42 +170,101 @@ class KSTARDataGenerator:
 
     def predict_0d(self, steady=True):
         """Predict 0D plasma parameters."""
+        
+        # input_params = [
+        #     'Ip [MA]', 'Bt [T]', 'GW.frac. [-]',
+        #     'Pnb1a [MW]', 'Pnb1b [MW]', 'Pnb1c [MW]',
+        #     'Pec2 [MW]', 'Pec3 [MW]', 'Zec2 [cm]', 'Zec3 [cm]',
+        #     'In.Mid. [m]', 'Out.Mid. [m]', 'Elon. [-]', 'Up.Tri. [-]', 'Lo.Tri. [-]'
+        # ]
+        
         if steady:
             x = np.zeros(17)
+            
+            # pick the right input parameters
             idx_convert = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 10, 2]
             for i in range(len(x) - 1):
                 param = input_params[idx_convert[i]]
                 x[i] = i2f(self.inputs[param])
+            
+            # x[: -1] -> [Ip, Bt, Pnb1a, Pnb1b, Pnb1c,
+            #       Pec2, Pec3, Zec2, Zec3,
+            #       In.Mid[1]., Out.Mid., Elon., Up.Tri., Lo.Tri.,
+            #       In.Mid[2]., GW.frac.]
+            
             # Handle special cases
+            # In.Mid[1], Out.Mid = 0.5 * (In.Mid + Out.Mid), 0.5 * (Out.Mid - In.Mid)
             x[9], x[10] = 0.5 * (x[9] + x[10]), 0.5 * (x[10] - x[9])
+            
+            # In.Mid[2] = 1.0 if In.Mid > 1.265 else 0.0
             x[14] = 1.0 if x[14] > 1.265 + 1.e-4 else 0.0
+            
             x[-1] = year_in
+            
+            # y -> [βn, q95, q0, li]
             y = self.kstar_nn.predict(x)
+            
+            # Update the outputs
             for i in range(len(output_params0)):
                 if len(self.outputs[output_params0[i]]) >= plot_length:
                     del self.outputs[output_params0[i]][0]
                 elif len(self.outputs[output_params0[i]]) == 1:
                     self.outputs[output_params0[i]][0] = y[i]
                 self.outputs[output_params0[i]].append(y[i])
+                
+            # Update the 0 index input of LSTM model, shape [seq_len=10, 18]
             self.x[:, :len(output_params0)] = y
             idx_convert = [0, 1, 2, 12, 13, 14, 10, 11, 3, 4, 5, 6, 10]
             for i in range(len(self.x[0]) - 1 - 4):
                 param = input_params[idx_convert[i]]
                 self.x[:, i + 4] = i2f(self.inputs[param])
+            
+            # self.x[:-1] -> [βn, q95, q0, li,
+            #            Ip, Bt, GW.frac.,
+            #            Elon., Up.Tri., Lo.Tri., 
+            #            In.Mid., Out.Mid.,
+            #            Pnb1a, Pnb1b, Pnb1c,
+            #            Pec2, In.Mid.]
+            
+            # Pec2 = Pec2 + Pec3
             self.x[:, 11 + 4] += i2f(self.inputs[input_params[7]])
+            
+            # In.Mid = 1.0 if In.Mid[last step] > 1.265 else 0.0
             self.x[:, 12 + 4] = 1.0 if self.x[-1, 12 + 4] > 1.265 + 1.e-4 else 0.0
             self.x[:, -1] = year_in
+            
         else:
+            # shift the input buffer conditions of LSTM model
+            # self.x shape [seq_len=10, 18]
             self.x[:-1, len(output_params0):] = self.x[1:, len(output_params0):]
+            
+            # pick the right input parameters
             idx_convert = [0, 1, 2, 12, 13, 14, 10, 11, 3, 4, 5, 6, 10]
             for i in range(len(self.x[0]) - 1 - 4):
                 param = input_params[idx_convert[i]]
                 self.x[-1, i + 4] = i2f(self.inputs[param])
+            
+            # self.x[:-1] -> [βn, q95, q0, li,
+            #            Ip, Bt, GW.frac.,
+            #            Elon., Up.Tri., Lo.Tri., 
+            #            In.Mid., Out.Mid.,
+            #            Pnb1a, Pnb1b, Pnb1c,
+            #            Pec2, In.Mid.]
+            
+            # Pec2 = Pec2 + Pec3
             self.x[-1, 11 + 4] += i2f(self.inputs[input_params[7]])
+            
+            # In.Mid = 1.0 if In.Mid[last step] > 1.265 else 0.0
             self.x[-1, 12 + 4] = 1.0 if self.x[-1, 12 + 4] > 1.265 + 1.e-4 else 0.0 
+            
+            # get the output from the LSTM model
             y = self.kstar_lstm.predict(self.x)
+            
+            # shift the input buffer states [βn, q95, q0, li] of LSTM model
             self.x[:-1, :len(output_params0)] = self.x[1:, :len(output_params0)]
             self.x[-1, :len(output_params0)] = y
+
+            # Update the outputs            
             for i in range(len(output_params0)):
                 if len(self.outputs[output_params0[i]]) >= plot_length:
                     del self.outputs[output_params0[i]][0]
@@ -220,9 +279,17 @@ class KSTARDataGenerator:
         for i in range(1, len(x)):
             param = input_params[idx_convert[i]]
             x[i] = i2f(self.inputs[param])
+            
+        # x -> [βn, Ip, Bt, In.Mid, Out.Mid, Elon, Up.Tri, Lo.Tri]
+            
         # Handle special cases
+        # In.Mid, Out.Mid = 0.5 * (In.Mid + Out.Mid), 0.5 * (Out.Mid - In.Mid)
         x[3], x[4] = 0.5 * (x[3] + x[4]), 0.5 * (x[4] - x[3])
+        
+        # output the (βp, wmhd)
         y = self.bpw_nn.predict(x)
+        
+        # Update the outputs
         for i in range(len(output_params1)):
             if len(self.outputs[output_params1[i]]) >= plot_length:
                 del self.outputs[output_params1[i]][0]
@@ -237,14 +304,29 @@ class KSTARDataGenerator:
             elif len(self.dummy[p]) == 1:
                 self.dummy[p][0] = self.inputs[p]
             self.dummy[p].append(self.inputs[p])
-
-        # Update histories
+        
+        # =======================
+        # =======================
+        # =======================
+        
+        # ***********************
+        # IMPORTANT: Update the history buffer 
+        # history buffer in shape [40, 9 + 3]
+        # 9 for actions, 3 for current state
+        # ***********************
+        
         self.histories[:-1] = self.histories[1:]
         self.histories[-1] = list(self.new_action) + list([
             self.outputs['βp'][-1], 
             self.outputs['q95'][-1], 
             self.outputs['li'][-1]
         ])
+
+        # =======================
+        #
+        # Following codes only used for visualizations
+        #
+        # =======================
 
         # Estimate H factors (h89, h98)
         ip = i2f(self.inputs['Ip [MA]'])
@@ -277,7 +359,10 @@ class KSTARDataGenerator:
 
         self.outputs['h89'].append(h89)
         self.outputs['h98'].append(h98)
-
+        
+        # =======================
+        # =======================
+        # =======================
 
     def auto_control(self, target):
         """Use RL model to predict new actions and update inputs."""
@@ -293,13 +378,7 @@ class KSTARDataGenerator:
         ]
         self.new_action = self.rl_model.predict(observation, yold=self.new_action)
         
-        idx_convert = [0, 3, 4, 5, 12, 13, 14, 10, 11]
-        for i, idx in enumerate(idx_convert):
-            param = input_params[idx]
-            # Ensure the new action is within the action bounds
-            action_value = np.clip(self.new_action[i], low_action[i], high_action[i])
-            self.inputs[param] = f2i(action_value)
-
+        # Actions in 
         # Ip [MA]
         # Pnb1a [MW]
         # Pnb1b [MW]
@@ -309,8 +388,16 @@ class KSTARDataGenerator:
         # Lo.Tri. [-]
         # In.Mid. [m]
         # Out.Mid. [m]
+        
+        idx_convert = [0, 3, 4, 5, 12, 13, 14, 10, 11]
+        for i, idx in enumerate(idx_convert):
+            param = input_params[idx]
+            # Ensure the new action is within the action bounds
+            action_value = np.clip(self.new_action[i], low_action[i], high_action[i])
+            self.inputs[param] = f2i(action_value)
 
-    def return_state(self):
+
+    def return_state(self):         
         return self.x[-1, :4].copy()
     
     def return_action(self):
@@ -330,6 +417,7 @@ class KSTARDataGenerator:
         seconds = 12
         states = []
         actions = []
+        targets = []
         
         # Predict 0D parameters first step 
         self.predict_0d(steady=True)
@@ -338,6 +426,7 @@ class KSTARDataGenerator:
         target = self.get_random_target()
         self.target = target
         states.append(self.return_state())
+        targets.append(target)
         
         # mimic the behavior of the original code (they need one step before to update the visualizations)
         self.auto_control(target)
@@ -345,6 +434,7 @@ class KSTARDataGenerator:
         
         actions.append(self.return_action())
         states.append(self.return_state())
+        targets.append(target)
         
         p_bar = tqdm(total=seconds * 10)
         
@@ -356,6 +446,7 @@ class KSTARDataGenerator:
                 
                 actions.append(self.return_action())
                 states.append(self.return_state())
+                targets.append(target)
         
                 p_bar.update(1)
             
@@ -365,6 +456,7 @@ class KSTARDataGenerator:
             
             actions.append(self.return_action())
             states.append(self.return_state())
+            targets.append(target)
             
             if (sec + 1) % 3 == 0:
                 target = self.get_random_target()
@@ -375,6 +467,7 @@ class KSTARDataGenerator:
         os.makedirs(os.path.join(base_path, 'data'), exist_ok=True)
         data_records = {
             'states': np.array(states),
+            'targets': np.array(targets),
             'actions': np.array(actions)
         }
         data_records = np.array(data_records)
