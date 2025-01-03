@@ -5,8 +5,6 @@ import argparse
 from tqdm.auto import tqdm
 from datasets import Dataset
 
-
-
 def consolidate_dataset(path, start_idx=0, end_idx=500):
     all_inputs, all_outputs, all_actions, all_targets = [], [], [], []
 
